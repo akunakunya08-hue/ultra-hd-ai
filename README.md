@@ -18,9 +18,14 @@ Aplikasi perlu "alamat web" agar bisa dipasang di Chrome. Cara gratis & mudah: G
    (muncul di halaman Pages; muat ulang bila belum tampil).
 8. Buka alamat itu di Chrome. Ketuk ⋮ → **Instal aplikasi** (atau **Tambahkan ke layar utama**).
 
+## A2. Jika sebelumnya sudah terpasang (versi lama)
+1. Di GitHub, buka tiap file lama (`index.html`, `sw.js`) → ikon pensil/⋯ → **Delete file** atau unggah ulang dengan nama sama (Add file → Upload files → timpa) → Commit.
+2. Tunggu 1–2 menit, buka aplikasi, ketuk **Hapus data AI** (hapus unduhan lama yang rusak), lalu lanjut ke B.
+3. Jika tampilan lama masih muncul: Chrome ⋮ → Setelan → Privasi → Hapus data penjelajahan → "Cookie dan data situs" untuk situs github.io.
+
 ## B. Unduh AI (sekali saja, sebaiknya pakai Wi-Fi)
 1. Buka ULTRA HD AI dari ikon layar utama.
-2. Pilih model: **Cepat** (±5 MB, disarankan untuk HP biasa) atau **Kualitas** (±37 MB, lebih bagus tapi jauh lebih lambat).
+2. Pilih model: **Cepat** (±5 MB, disarankan untuk HP biasa) atau **Kualitas** (±64 MB, lebih bagus tapi jauh lebih lambat).
 3. Ketuk **Unduh & Siapkan AI**. Tunggu sampai muncul "Mesin: siap" dan "Model: siap" (hijau).
 4. Jangan tutup halaman selama mengunduh. Jika gagal, tekan tombol lagi (aman diulang).
 
@@ -35,8 +40,12 @@ Mulai dengan 1 foto kecil (≤1000 px) untuk mencoba kecepatan HP Anda. Foto bes
 3. Pastikan chip "Mesin" dan "Model" hijau, lalu proses foto lagi. Jika berhasil = benar-benar offline.
 Jika gagal, jangan hapus data; kirimkan pesan error yang muncul agar bisa diperbaiki.
 
+## Jika masih ada error
+Buka "Diagnosa & cadangan" di kartu 1 → ketuk **Tes mesin AI** → screenshot kotak log dan kirim ke Claude.
+Log menampilkan: apakah SIMD didukung, hasil tes mesin, ukuran berkas yang diunduh, dan pesan error asli.
+
 ## Catatan jujur
-- Belum diuji di HP nyata oleh pembuat. Nama file model & CDN diambil dari repositori publik (jsDelivr dan Hugging Face `baker76/upscale-models`); jika tautan berubah, unduhan akan gagal dan aplikasi menampilkan pesan.
+- Belum diuji di HP nyata oleh pembuat. Model diambil dari Hugging Face `jonathanst29/tinier-upscale-models` (ONNX fp32, sumbu H/W dinamis, dipakai situs upscaler berbasis onnxruntime-web; cadangan `baker76/upscale-models`), mesin dari jsDelivr (cadangan unpkg); jika tautan berubah, unduhan akan gagal dan aplikasi menampilkan pesan.
 - Upscale memakai Real-ESRGAN (jaringan saraf sungguhan), diproses per-potongan (tile) agar RAM hemat, di CPU (WASM, 1 thread).
 - Deblur & noise reduction = unsharp mask dan filter pengurang noise klasik, ditambah efek penghalus noise dari model.
 - Face Enhancement BUKAN GFPGAN: hanya penajaman ekstra pada wajah jika Chrome mendukung `FaceDetector` (sering perlu mengaktifkan flag "Experimental Web Platform features" di chrome://flags). Jika tidak, dilewati.

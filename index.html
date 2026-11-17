@@ -38,14 +38,15 @@ small{color:var(--mut)}
 
 <div class="card"><h2>1 · Persiapan (sekali saja, butuh internet)</h2>
  <select id="msel">
-  <option value="fast">Cepat — Real-ESRGAN General x4 (±5 MB)</option>
-  <option value="hq">Kualitas — Real-ESRGAN x4plus (±37 MB, lebih lambat)</option>
+  <option value="fast">Cepat — Real-ESRGAN General x4v3 (±5 MB)</option>
+  <option value="hq">Kualitas — Real-ESRGAN x4plus (±64 MB, jauh lebih lambat)</option>
  </select>
  <div class="row"><span id="est" class="chip">Mesin: ?</span><span id="mst" class="chip">Model: ?</span></div>
  <button class="btn" id="bSetup">Unduh &amp; Siapkan AI</button>
  <div class="bar"><i id="db"></i></div><small id="dt">Setelah terunduh, aplikasi bisa dipakai tanpa internet.</small>
- <details style="margin-top:10px"><summary><small>Unduhan gagal? Pakai file .onnx dari HP</small></summary>
-  <div class="row"><button class="btn sec sm" id="bModel">Pilih file .onnx</button></div>
+ <details style="margin-top:10px"><summary><small>Diagnosa &amp; cadangan (buka jika ada masalah)</small></summary>
+  <pre id="log" style="white-space:pre-wrap;font-size:11px;color:var(--mut);max-height:200px;overflow:auto;background:#0d1422;border-radius:8px;padding:8px"></pre>
+  <div class="row"><button class="btn sec sm" id="bDiag">Tes mesin AI</button><button class="btn sec sm" id="bModel">Pilih file .onnx</button></div>
   <input id="fModel" type="file" accept=".onnx" hidden></details>
  <div class="row"><button class="btn sec sm" id="bWipe">Hapus data AI</button></div>
 </div>
@@ -94,68 +95,154 @@ const tick=()=>new Promise(r=>setTimeout(r,0));
 function toast(m,ms=4500){const t=$('toast');t.textContent=m;t.style.display='block';clearTimeout(t._t);t._t=setTimeout(()=>t.style.display='none',ms)}
 function chip(el,txt,c){el.textContent=txt;el.className='chip '+(c||'')}
 
+/* ---------- Util & log ---------- */
+const LOG=[];
+function log(m){LOG.push(new Date().toLocaleTimeString()+' '+m);$('log').textContent=LOG.slice(-80).join('\n')}
+function desc(e){ // ORT/emscripten sering melempar string/angka, bukan Error
+  if(e instanceof Error)return e.message||e.name;
+  if(typeof e==='string')return e;if(typeof e==='number')return 'kode internal '+e;
+  try{return JSON.stringify(e)}catch(_){return String(e)}
+}
+addEventListener('unhandledrejection',ev=>log('unhandled: '+desc(ev.reason)));
+addEventListener('error',ev=>log('error: '+ev.message));
+
 /* ---------- IndexedDB ---------- */
 const idb=()=>new Promise((res,rej)=>{const r=indexedDB.open('ultrahd',1);r.onupgradeneeded=()=>r.result.createObjectStore('m');r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)});
-async function dbGet(k){const d=await idb();return new Promise((res,rej)=>{const q=d.transaction('m').objectStore('m').get(k);q.onsuccess=()=>res(q.result);q.onerror=()=>rej(q.error)})}
-async function dbSet(k,v){const d=await idb();return new Promise((res,rej)=>{const q=d.transaction('m','readwrite').objectStore('m').put(v,k);q.onsuccess=()=>res();q.onerror=()=>rej(q.error)})}
-async function dbClear(){const d=await idb();return new Promise((res,rej)=>{const q=d.transaction('m','readwrite').objectStore('m').clear();q.onsuccess=()=>res();q.onerror=()=>rej(q.error)})}
+const dbDo=(mode,fn)=>idb().then(d=>new Promise((res,rej)=>{const q=fn(d.transaction('m',mode).objectStore('m'));q.onsuccess=()=>res(q.result);q.onerror=()=>rej(q.error)}));
+const dbGet=k=>dbDo('readonly',o=>o.get(k)),dbSet=(k,v)=>dbDo('readwrite',o=>o.put(v,k)),dbDel=k=>dbDo('readwrite',o=>o.delete(k)),dbClear=()=>dbDo('readwrite',o=>o.clear());
 
-/* ---------- Unduhan ---------- */
-const ORT_V='1.17.3',CDN='https://cdn.jsdelivr.net/npm/onnxruntime-web@'+ORT_V+'/dist/';
-const HF='https://huggingface.co/baker76/upscale-models/resolve/main/';
-const MODELS={fast:{file:'RealESR_General_x4.onnx',tile:192},hq:{file:'RealESRGAN_x4plus_fp16.onnx',tile:128}};
+/* ---------- Sumber unduhan ---------- */
+const ORT_V='1.17.3';
+const ENG=['https://cdn.jsdelivr.net/npm/onnxruntime-web@'+ORT_V+'/dist/','https://unpkg.com/onnxruntime-web@'+ORT_V+'/dist/'];
+const MODELS={
+  fast:{tile:192,urls:['https://huggingface.co/jonathanst29/tinier-upscale-models/resolve/main/realesr-general-x4v3.onnx','https://huggingface.co/baker76/upscale-models/resolve/main/RealESR_General_x4.onnx']},
+  hq:{tile:128,urls:['https://huggingface.co/jonathanst29/tinier-upscale-models/resolve/main/realesrgan-x4plus.onnx','https://huggingface.co/baker76/upscale-models/resolve/main/RealESRGAN_x4plus.onnx']}
+};
+const vJs=b=>{if(b.byteLength<2e5||new Uint8Array(b)[0]===0x3c)throw new Error('berkas mesin .js tidak valid ('+b.byteLength+' B)')};
+const vWasm=b=>{const u=new Uint8Array(b,0,4);if(b.byteLength<2e6||u[0]||u[1]!==0x61||u[2]!==0x73||u[3]!==0x6d)throw new Error('berkas mesin .wasm tidak valid ('+b.byteLength+' B)')};
+const vModel=b=>{const u=new Uint8Array(b,0,1);if(b.byteLength<1e6||u[0]===0x3c||u[0]===0x76)throw new Error('berkas model bukan ONNX ('+b.byteLength+' B)')};
 async function download(url,label){
-  const r=await fetch(url);if(!r.ok)throw new Error(label+': HTTP '+r.status);
+  log('GET '+url);
+  const r=await fetch(url);if(!r.ok)throw new Error('HTTP '+r.status+' dari '+new URL(url).host);
   const len=+r.headers.get('content-length')||0,rd=r.body.getReader(),ch=[];let got=0;
   for(;;){const{done,value}=await rd.read();if(done)break;ch.push(value);got+=value.length;
     $('db').style.width=(len?got/len*100:50)+'%';$('dt').textContent=label+': '+(got/1048576).toFixed(1)+(len?' / '+(len/1048576).toFixed(1):'')+' MB'}
-  return new Blob(ch).arrayBuffer();
+  const buf=await new Blob(ch).arrayBuffer();log('  diterima '+buf.byteLength+' B');return buf;
 }
-let engineReady=false;
-async function loadEngine(){
+async function fetchFirst(urls,label,validate){
+  const errs=[];
+  for(const u of urls){try{const b=await download(u,label);validate(b);return b}catch(e){const m=desc(e);errs.push(m);log('  gagal: '+m)}}
+  throw new Error(errs.join(' | '));
+}
+
+/* ---------- Model ONNX mini untuk tes mesin (Identity) ---------- */
+function tinyModel(){
+  const v=n=>{const o=[];while(n>127){o.push((n&127)|128);n>>>=7}o.push(n);return o};
+  const tag=(f,w)=>v(f<<3|w),iv=(f,n)=>[...tag(f,0),...v(n)],ld=(f,b)=>[...tag(f,2),...v(b.length),...b],st=(f,x)=>ld(f,[...new TextEncoder().encode(x)]);
+  const vi=n=>{const dim=k=>ld(1,iv(1,k));return[...st(1,n),...ld(2,ld(1,[...iv(1,1),...ld(2,[...dim(1),...dim(4)])]))]};
+  const node=[...st(1,'x'),...st(2,'y'),...st(3,'n'),...st(4,'Identity')];
+  const graph=[...ld(1,node),...st(2,'g'),...ld(11,vi('x')),...ld(12,vi('y'))];
+  return new Uint8Array([...iv(1,8),...ld(8,iv(2,13)),...ld(7,graph)]);
+}
+async function selfTest(){
+  try{
+    const s=await ort.InferenceSession.create(tinyModel(),{executionProviders:['wasm']});
+    const o=await s.run({x:new ort.Tensor('float32',new Float32Array([1,2,3,4]),[1,4])});
+    const y=Array.from(o.y.data).join(',');if(y!=='1,2,3,4')return{ok:false,err:'keluaran salah: '+y};
+    return{ok:true};
+  }catch(e){return{ok:false,err:desc(e)}}
+}
+
+/* ---------- Mesin (ONNX Runtime Web) ---------- */
+let engineReady=false,engineFail=null;
+async function putEngineCache(wasm){
+  const c=await caches.open('ultrahd-engine');
+  await c.put(new URL('_engine/ort-wasm-simd.wasm',location.href).href,new Response(wasm,{headers:{'Content-Type':'application/wasm'}}));
+}
+async function initEngine(){
   if(engineReady)return true;
-  const js=await dbGet('ort_js'),wasm=await dbGet('ort_wasm');if(!js||!wasm)return false;
-  await new Promise((res,rej)=>{const s=document.createElement('script');s.src=URL.createObjectURL(new Blob([js],{type:'text/javascript'}));s.onload=res;s.onerror=()=>rej(new Error('Mesin AI gagal dimuat'));document.head.appendChild(s)});
-  ort.env.wasm.wasmPaths={'ort-wasm-simd.wasm':URL.createObjectURL(new Blob([wasm],{type:'application/wasm'}))};
-  ort.env.wasm.numThreads=1;engineReady=true;return true;
+  const js=await dbGet('ort_js'),wasm=await dbGet('ort_wasm'),ver=await dbGet('ort_ver');
+  if(!js||!wasm||ver!==ORT_V)return false;
+  try{vJs(js);vWasm(wasm)}catch(e){log('Mesin tersimpan rusak: '+desc(e));await dbDel('ort_js');await dbDel('ort_wasm');return false}
+  if(!window.ort)await new Promise((res,rej)=>{const s=document.createElement('script');s.src=URL.createObjectURL(new Blob([js],{type:'text/javascript'}));s.onload=res;s.onerror=()=>rej(new Error('skrip mesin gagal dijalankan'));document.head.appendChild(s)});
+  const mode=localStorage.getItem('ultra_mode')||'blob';log('Mode mesin: '+mode+', ORT '+(ort.env.versions&&ort.env.versions.common||'?'));
+  ort.env.wasm.numThreads=1;ort.env.wasm.proxy=false;
+  if(mode==='sw'){await putEngineCache(wasm);ort.env.wasm.wasmPaths=new URL('_engine/',location.href).href}
+  else ort.env.wasm.wasmPaths={'ort-wasm-simd.wasm':URL.createObjectURL(new Blob([wasm],{type:'application/wasm'}))};
+  const t=await selfTest();log('Tes mesin: '+(t.ok?'LULUS':'GAGAL — '+t.err));
+  if(t.ok){engineReady=true;return true}
+  if(mode==='blob'&&!sessionStorage.getItem('ultra_retry')){localStorage.setItem('ultra_mode','sw');sessionStorage.setItem('ultra_retry','1');log('Beralih ke mode cadangan, memuat ulang…');setTimeout(()=>location.reload(),700);return false}
+  localStorage.setItem('ultra_mode','blob');engineFail=t.err;throw new Error('Mesin AI gagal start: '+t.err);
 }
+
+/* ---------- Sesi model ---------- */
 async function startSession(buf,tile){
   chip($('mst'),'Model: memuat…');await tick();
-  try{session=await ort.InferenceSession.create(buf,{executionProviders:['wasm'],graphOptimizationLevel:'all'});
-    T=tile;STEP=T-2*P;chip($('mst'),'Model: siap','ok');upd();return true}
-  catch(e){session=null;chip($('mst'),'Model: gagal','er');toast('Model gagal dimuat: '+e.message+'. Coba model "Cepat".',8000);return false}
+  const u8=new Uint8Array(buf),errs=[];session=null;
+  for(const lvl of ['all','basic','disabled']){
+    try{session=await ort.InferenceSession.create(u8,{executionProviders:['wasm'],graphOptimizationLevel:lvl});log('Sesi dibuat (opt='+lvl+')');break}
+    catch(e){errs.push(lvl+': '+desc(e));log('Sesi gagal opt='+lvl+': '+desc(e))}
+  }
+  if(!session){chip($('mst'),'Model: gagal','er');toast('Model gagal dimuat — '+errs[errs.length-1],9000);return false}
+  try{ // uji jalan nyata 32×32 → harus 128×128
+    const o=await session.run({[session.inputNames[0]]:new ort.Tensor('float32',new Float32Array(3*32*32).fill(.5),[1,3,32,32])});
+    const d=o[session.outputNames[0]].dims;log('Uji jalan: keluaran '+d.join('×'));
+    if(d[2]!==128||d[3]!==128)throw new Error('skala model bukan 4x ('+d.join('×')+')');
+  }catch(e){session=null;chip($('mst'),'Model: gagal uji','er');log('Uji jalan gagal: '+desc(e));toast('Model terbaca tapi gagal dijalankan: '+desc(e),9000);return false}
+  T=tile;STEP=T-2*P;chip($('mst'),'Model: siap','ok');upd();return true;
 }
 async function refresh(){
   const id=$('msel').value;session=null;upd();
   try{
-    const eng=await loadEngine();chip($('est'),eng?'Mesin: siap':'Mesin: belum diunduh',eng?'ok':'');
-    const m=await dbGet('model:'+id);
-    if(eng&&m)await startSession(m.slice(0),MODELS[id].tile);else chip($('mst'),'Model: belum diunduh','');
-  }catch(e){chip($('est'),'Mesin: error','er');toast(e.message)}
+    const eng=await initEngine();chip($('est'),eng?'Mesin: siap':'Mesin: belum diunduh',eng?'ok':'');
+    if(!eng){chip($('mst'),'Model: menunggu mesin');return}
+    const m=await dbGet('mdl2:'+id);
+    if(!m){chip($('mst'),'Model: belum diunduh');return}
+    try{vModel(m)}catch(e){await dbDel('mdl2:'+id);chip($('mst'),'Model: rusak, unduh ulang','er');toast('Model tersimpan rusak dan dihapus. Tekan Unduh lagi.');return}
+    if(!(await startSession(m,MODELS[id].tile))){
+      await dbDel('mdl2:'+id);localStorage.setItem('ultra_mirror_'+id,((+localStorage.getItem('ultra_mirror_'+id)||0)+1)%MODELS[id].urls.length);
+      $('dt').textContent='Model dihapus. Tekan "Unduh & Siapkan AI" lagi (memakai sumber cadangan).';
+    }
+  }catch(e){chip($('est'),'Mesin: error','er');log('refresh: '+desc(e));toast(desc(e),9000)}
 }
 $('msel').onchange=refresh;
+
 $('bSetup').onclick=async()=>{
   if(busy)return;const id=$('msel').value,btn=$('bSetup');btn.disabled=true;
   try{
-    if(!(await dbGet('ort_js'))||!(await dbGet('ort_wasm'))){
-      await dbSet('ort_js',await download(CDN+'ort.min.js','Mengunduh mesin (1/3)'));
-      await dbSet('ort_wasm',await download(CDN+'ort-wasm-simd.wasm','Mengunduh mesin (2/3)'));
+    if((await dbGet('ort_ver'))!==ORT_V||!(await dbGet('ort_js'))||!(await dbGet('ort_wasm'))){
+      let ok=false,errs=[];
+      for(const base of ENG){try{
+        const js=await download(base+'ort.min.js','Mengunduh mesin (1/3)');vJs(js);
+        const wa=await download(base+'ort-wasm-simd.wasm','Mengunduh mesin (2/3)');vWasm(wa);
+        await dbSet('ort_js',js);await dbSet('ort_wasm',wa);await dbSet('ort_ver',ORT_V);ok=true;break}catch(e){errs.push(desc(e));log('  gagal: '+desc(e))}}
+      if(!ok)throw new Error('mesin: '+errs.join(' | '));
     }
-    if(!(await dbGet('model:'+id)))await dbSet('model:'+id,await download(HF+MODELS[id].file,'Mengunduh model (3/3)'));
+    if(!(await dbGet('mdl2:'+id))){
+      const k=+localStorage.getItem('ultra_mirror_'+id)||0,u=MODELS[id].urls,urls=u.slice(k).concat(u.slice(0,k));
+      await dbSet('mdl2:'+id,await fetchFirst(urls,'Mengunduh model (3/3)',vModel));
+    }
     if(navigator.storage&&navigator.storage.persist)navigator.storage.persist();
-    $('dt').textContent='Unduhan selesai. Sekarang bisa dipakai tanpa internet.';$('db').style.width='100%';
-    await refresh();
-  }catch(e){$('dt').textContent='Gagal: '+e.message;toast('Unduhan gagal ('+e.message+'). Cek internet lalu tekan tombol lagi.',7000)}
+    $('db').style.width='100%';$('dt').textContent='Unduhan selesai. Memeriksa AI…';
+    await refresh();if(session)$('dt').textContent='Siap! Sekarang bisa dipakai tanpa internet.';
+  }catch(e){$('dt').textContent='Gagal: '+desc(e);toast('Unduhan gagal: '+desc(e),8000)}
   btn.disabled=false;
 };
 $('bModel').onclick=()=>$('fModel').click();
 $('fModel').onchange=async e=>{const f=e.target.files[0];if(!f)return;
-  if(!(await loadEngine())){toast('Unduh mesin dulu lewat tombol "Unduh & Siapkan AI".');return}
-  await startSession(await f.arrayBuffer(),128)};
-$('bWipe').onclick=async()=>{if(confirm('Hapus mesin & model AI dari HP? (Perlu unduh ulang)')){await dbClear();location.reload()}};
+  try{if(!(await initEngine())){toast('Unduh mesin dulu lewat "Unduh & Siapkan AI".');return}
+    const b=await f.arrayBuffer();vModel(b);await startSession(b,128)}catch(err){toast(desc(err),8000)}};
+$('bDiag').onclick=async()=>{
+  const simd=WebAssembly.validate(new Uint8Array([0,97,115,109,1,0,0,0,1,5,1,96,0,1,123,3,2,1,0,10,10,1,8,0,65,0,253,15,253,98,11]));
+  let q='?';try{const e=await navigator.storage.estimate();q=(e.usage/1048576|0)+'/'+(e.quota/1048576|0)+' MB'}catch(_){}
+  log('DIAG UA='+navigator.userAgent);log('DIAG SIMD='+simd+' RAM='+(navigator.deviceMemory||'?')+'GB isolated='+self.crossOriginIsolated+' storage='+q+' sw='+!!navigator.serviceWorker.controller+' mode='+(localStorage.getItem('ultra_mode')||'blob'));
+  if(window.ort){const t=await selfTest();log('DIAG tes mesin: '+(t.ok?'LULUS':'GAGAL '+t.err))}else log('DIAG mesin belum dimuat');
+  toast('Diagnosa selesai — lihat kotak log.',3000);
+};
+$('bWipe').onclick=async()=>{if(confirm('Hapus mesin & model AI dari HP? (Perlu unduh ulang)')){await dbClear();try{await caches.delete('ultrahd-engine')}catch(_){}
+  Object.keys(localStorage).filter(k=>k.startsWith('ultra_')).forEach(k=>localStorage.removeItem(k));location.reload()}};
 (async()=>{
-  const mem=navigator.deviceMemory;if(mem)toast('RAM terdeteksi ≈ '+mem+' GB',2500);
-  if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
+  if('serviceWorker' in navigator)try{await navigator.serviceWorker.register('sw.js')}catch(e){log('SW gagal: '+desc(e))}
   await refresh();
 })();
 
